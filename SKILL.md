@@ -11,6 +11,8 @@ description: >
 
 # Wallpaper Engine pkg 接包
 
+> ⚠️ **使用前请阅读 [DISCLAIMER.md](DISCLAIMER.md)**：本工具为独立逆向格式转换器，与 Wallpaper Engine 无关联；处理素材版权归原作者，转换结果仅限个人自用，禁止再分发。
+
 把 Steam Workshop 的壁纸引擎壁纸包（一个目录 = 一个壁纸：`project.json` + `scene.pkg` 或视频文件）批量转成可直接用的壁纸成品。
 
 ## 成品组织
