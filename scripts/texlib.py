@@ -12,6 +12,15 @@ Wallpaper Engine .tex 纹理解码库（TEXV0005 格式）
         TEXB0003        FreeImage 内嵌图片 (JPEG/PNG/GIF), 4B format + 图片数据
         TEXB0004        内嵌图片或 MP4 视频, 4B format + 4B isVideo + 数据
 
+解码架构（统一入口 decode_texture）:
+    decode_texture(tex)
+        ├─ 检测头部/格式
+        ├─ 有内嵌媒体?  → 提取 (mp4/png/jpg/gif/webp)
+        ├─ 无内嵌媒体?
+        │    ├─ BC1    → 软件解码 (decode_bc1_block)
+        │    └─ BC7    → 返回需要 RePKG 的信号（脚本不内置 BC7 解码）
+        └─ 其他/未知   → None
+
 TexFormat (FreeImage FIF):
     0=UNKNOWN 1=BMP 2=ICO 3=JPEG 4=JNG 5=KOALA 6=LBM 7=MNG 8=PBM 9=PBMRAW
     10=PCD 11=PCX 12=PGM 13=PGMRAW 14=PNG 15=PPM 16=PPMRAW 17=RAS 18=TARGA
@@ -32,20 +41,34 @@ FIF_GIF = 26
 FIF_WEBP = 36
 FIF_MP4 = 40
 
+MIN_TEX_SIZE = 16  # magic + magic + header 起码头
+MAX_TEX_SIZE = 512 * 1024 * 1024  # 512MB 上限，防恶意超大文件
+
+
+class TexError(Exception):
+    """tex 解析错误（损坏/不支持）"""
+
+
+def _ensure_valid(data: bytes):
+    if len(data) < MIN_TEX_SIZE:
+        raise TexError(f"tex 文件过小: {len(data)}B")
+    if len(data) > MAX_TEX_SIZE:
+        raise TexError(f"tex 文件过大: {len(data)}B > 512MB")
+    if data[:8] != b"TEXV0005":
+        raise TexError(f"不是 TEXV0005 纹理 (magic={data[:8]!r})")
+
 
 def parse_tex(data: bytes) -> dict:
-    """解析 tex 头部信息"""
-    if data[:8] == b"TEXV0005":
-        magic1 = b"TEXV0005"
-        pos = 8
-        if data[pos] == 0:
-            pos += 1
-    else:
-        raise ValueError("不是 TEXV0005 纹理")
+    """解析 tex 头部信息；损坏文件抛 TexError"""
+    _ensure_valid(data)
+    pos = 8
+    if data[pos] == 0:
+        pos += 1
     if data[pos:pos + 8] == b"TEXI0001":
         pos += 8
         if data[pos] == 0:
             pos += 1
+    _check_bounds(data, pos, 28, "header")
     fmt, flags, tex_w, tex_h, img_w, img_h, unk = struct.unpack_from("<IIIIIII", data, pos)
     return {
         "format": fmt, "flags": flags,
@@ -53,6 +76,11 @@ def parse_tex(data: bytes) -> dict:
         "image_size": (img_w, img_h),
         "header_end": pos + 28,
     }
+
+
+def _check_bounds(data: bytes, off: int, size: int, what: str):
+    if off < 0 or size < 0 or off + size > len(data):
+        raise TexError(f"越界: {what} @{off} size={size} (文件 {len(data)}B)")
 
 
 def _split_texb(data: bytes) -> list:
@@ -110,7 +138,7 @@ def extract_inline_image(chunk: bytes):
         iend = blob.find(b"IEND")
         if iend > 0:
             blob = blob[: iend + 8]
-        if len(blob) > 1000:
+        if len(blob) > 64:
             return "png", blob
     # GIF
     j = chunk.find(b"GIF8")
@@ -180,6 +208,7 @@ def tex2image_fast(tex_path: str) -> list:
           用 decode_bc1_block 兜底；BC7(TEXB0001 高阶格式) 建议用 RePKG（见 SKILL.md）
     """
     data = Path(tex_path).read_bytes()
+    _ensure_valid(data)
     info = parse_tex(data)
     results = []
     for magic, chunk in _split_texb(data):
@@ -202,9 +231,46 @@ def tex2image_fast(tex_path: str) -> list:
     return results
 
 
+MEDIA_PRIORITY = {"mp4": 0, "jpg": 1, "png": 1, "gif": 2, "webp": 3, "raw_bc1": 4}
+
+
+def decode_texture(tex_path: str):
+    """
+    统一解码入口（Agent 主用 API）:
+      返回 (kind, data) 最佳媒体；无可用媒体返回 None。
+      选择优先级: mp4 > png/jpg > gif > webp > raw_bc1（按字节数取最大）。
+      失败/损坏抛 TexError。
+    """
+    data = Path(tex_path).read_bytes()
+    _ensure_valid(data)
+    media = tex2image_fast(tex_path)
+    if not media:
+        return None
+    best = sorted(media, key=lambda x: (MEDIA_PRIORITY.get(x[0], 9), -len(x[1])))[0]
+    kind, blob = best
+
+    # raw BC1: 尝试软件解码（BC7 无法解码时返回原样，由调用方决定走 RePKG）
+    if kind == "raw_bc1":
+        info = parse_tex(data)
+        w, h = info["image_size"]
+        if w and h:
+            try:
+                png = bc1_to_png(blob[: (w * h) // 4 * 16], w, h)
+                if png:
+                    return "png", png
+            except Exception:
+                pass
+        # 解码失败或 BC7: 标记需要 RePKG
+        return "needs_repkg", blob
+    return kind, blob
+
+
 if __name__ == "__main__":
     import sys
     for p in sys.argv[1:]:
         print(f"=== {p} ===")
-        for kind, blob in tex2image_fast(p):
-            print(f"  {kind}: {len(blob)} bytes")
+        try:
+            for kind, blob in tex2image_fast(p):
+                print(f"  {kind}: {len(blob)} bytes")
+        except TexError as e:
+            print(f"  [!] {e}")

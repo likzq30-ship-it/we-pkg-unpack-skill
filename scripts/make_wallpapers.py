@@ -69,6 +69,9 @@ def main_image_sources(id_dir: Path, wtype: str) -> list:
             # 取最大 tex（一般为主图），提取内嵌媒体
             for t in texs[:3]:
                 for kind, blob in tex2image_fast(str(t)):
+                    # 跳过原始 BC 压缩块（无法直接当图片用；BC1 可用 RePKG 兜底）
+                    if kind in ("raw_bc1", "raw_texb2"):
+                        continue
                     p = id_dir / f"_extracted_{sanitize(t.stem)}.{kind}"
                     p.write_bytes(blob)
                     candidates.append((kind, p))
@@ -178,19 +181,26 @@ def process_wallpaper(id_dir: Path, out_root: Path, only_video: bool, only_image
 
 
 def get_crop_vf(out_w: int, src: str) -> str:
-    """按源宽度选择裁切参数（4K / 1080p 两档）"""
+    """自适应中心裁切: 按源实际分辨率取目标比例内最大区域，再缩放（兼容任意分辨率源）"""
+    out_h = {2560: 1664, 2880: 1864}.get(out_w, out_w * 1664 // 2560)
     r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0",
-                        "-show_entries", "stream=width", "-of", "csv=p=0", src],
+                        "-show_entries", "stream=width,height", "-of", "csv=p=0", src],
                        capture_output=True, text=True)
     try:
-        w = int(r.stdout.strip())
-    except ValueError:
-        w = 0
-    if out_w == 2560:
-        return "crop=3324:2160:258:0,scale=2560:1664:flags=lanczos" if w >= 3000 \
-            else "crop=1662:1080:129:0,scale=2560:1664:flags=lanczos"
-    return "crop=3338:2160:251:0,scale=2880:1864:flags=lanczos" if w >= 3000 \
-        else "crop=1668:1080:126:0,scale=2880:1864:flags=lanczos"
+        sw, sh = [int(x) for x in r.stdout.strip().split(",")]
+    except (ValueError, IndexError):
+        sw = sh = 0
+    if sw <= 0 or sh <= 0:
+        return f"scale={out_w}:{out_h}:flags=lanczos"
+    target = out_w / out_h
+    if sw / sh > target:  # 源更宽 → 裁宽
+        cw = int(sh * target)
+        cx = (sw - cw) // 2
+        return f"crop={cw}:{sh}:{cx}:0,scale={out_w}:{out_h}:flags=lanczos"
+    else:  # 源更高 → 裁高
+        ch = int(sw / target)
+        cy = (sh - ch) // 2
+        return f"crop={sw}:{ch}:0:{cy},scale={out_w}:{out_h}:flags=lanczos"
 
 
 def make_video(src: str, name: str, out_root: Path):

@@ -36,8 +36,11 @@ def main():
     kind, blob = best
 
     if kind == "raw_bc1":
-        info = parse_tex(Path(tex).read_bytes())
-        w, h = info["image_size"]
+        try:
+            info = parse_tex(Path(tex).read_bytes())
+            w, h = info["image_size"]
+        except Exception:
+            w = h = 0
         print(f"  BC1 无内嵌图: 尝试解码 {w}x{h} (仅 BC1，BC7 请用 RePKG)")
         png = bc1_to_png(blob[: w * h * 16 // 16 * 16], w, h) if w and h else b""
         if png:
