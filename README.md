@@ -32,11 +32,11 @@ python3 scripts/tex2image.py "<id>/unpacked/materials/x.tex" # tex → 媒体
 
 ```bash
 # Cursor 技能
-git clone https://github.com/likzq30-ship-it/we-pkg-unpack.git \
+git clone https://github.com/likzq30-ship-it/we-pkg-unpack-skill.git \
     ~/.cursor/skills-cursor/we-pkg-unpack
 
 # Claude Code 技能（二选一）
-git clone https://github.com/likzq30-ship-it/we-pkg-unpack.git \
+git clone https://github.com/likzq30-ship-it/we-pkg-unpack-skill.git \
     ~/.claude/skills/we-pkg-unpack
 ```
 
